@@ -1,0 +1,61 @@
+plugins { id 'com.android.application' }
+
+// ---------- ค่าที่ส่งเข้ามาจาก GitHub Actions (หรือจะใส่ -P... เองก็ได้) ----------
+def serverUrl = (project.findProperty('SPYFALL_SERVER_URL') ?: System.getenv('SPYFALL_SERVER_URL') ?: 'https://YOUR-SERVER.onrender.com').toString().trim()
+
+// Google Play ต้องการ versionCode ที่มากขึ้นทุกครั้งที่อัปโหลด — workflow ใส่ให้อัตโนมัติ
+def appVersionCode = (project.findProperty('VERSION_CODE') ?: System.getenv('VERSION_CODE') ?: '1').toString().toInteger()
+
+// ---------- กุญแจเซ็นไฟล์ (upload key) — workflow สร้างไฟล์จาก GitHub Secrets ----------
+def keystoreFile = new File(rootDir, 'upload-keystore.jks')
+def keystorePassword = System.getenv('KEYSTORE_PASSWORD')
+def keyAliasName = System.getenv('KEY_ALIAS') ?: 'upload'
+def keyPasswordValue = System.getenv('KEY_PASSWORD') ?: keystorePassword
+def hasSigning = keystoreFile.exists() && keystorePassword
+
+android {
+    namespace 'com.temgraph.spyfallonline'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.temgraph.spyfallonline'
+        minSdk 23
+        targetSdk 36
+        versionCode appVersionCode
+        versionName '1.0.0'
+        buildConfigField 'String', 'SERVER_URL', '"' + serverUrl.replace('\\', '\\\\').replace('"', '\\"') + '"'
+    }
+
+    signingConfigs {
+        if (hasSigning) {
+            release {
+                storeFile keystoreFile
+                storeType 'pkcs12'
+                storePassword keystorePassword
+                keyAlias keyAliasName
+                keyPassword keyPasswordValue
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (hasSigning) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    buildFeatures { buildConfig true }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    // ไม่ให้ lint มาทำให้ build พังตอนยังไม่ได้ทดสอบ (เปิดกลับได้ภายหลัง)
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+}

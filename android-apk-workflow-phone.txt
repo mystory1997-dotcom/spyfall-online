@@ -1,0 +1,96 @@
+name: Build Spyfall Online APK
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-apk.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Unpack game source archive (phone-only upload)
+        run: |
+          if [ -f spyfall-online-source.zip ]; then unzip -oq spyfall-online-source.zip -d .; fi
+          if [ ! -d android ]; then
+            echo "::error::ไม่พบโฟลเดอร์ android - ให้อัปโหลดไฟล์ spyfall-online-source.zip ไว้หน้าแรกของ repository"
+            exit 1
+          fi
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-36" "build-tools;35.0.0"
+
+      - name: Check server URL and set version code
+        env:
+          SPYFALL_SERVER_URL: ${{ vars.SPYFALL_SERVER_URL || secrets.SPYFALL_SERVER_URL }}
+        run: |
+          URL="$(printf '%s' "$SPYFALL_SERVER_URL" | tr -d ' \r\n')"
+          URL="${URL%/}"
+          if [ -z "$URL" ]; then
+            echo "SERVER_OK=false" >> "$GITHUB_ENV"
+            echo "::warning::ยังไม่ได้ตั้ง SPYFALL_SERVER_URL - APK ที่ได้จะแสดงหน้า 'ยังไม่ได้ตั้งค่าเซิร์ฟเวอร์' (ใช้ดูหน้าตาแอปได้อย่างเดียว)"
+          else
+            case "$URL" in
+              https://*) echo "SERVER_OK=true" >> "$GITHUB_ENV" ;;
+              *) echo "::error::SPYFALL_SERVER_URL ต้องขึ้นต้นด้วย https:// (ตอนนี้คือ $URL)"; exit 1 ;;
+            esac
+          fi
+          echo "SPYFALL_SERVER_URL=$URL" >> "$GITHUB_ENV"
+          # versionCode เพิ่มขึ้นเองทุกครั้ง (นับเป็นนาทีจาก epoch) - Google Play ต้องการเลขที่สูงขึ้นทุกครั้งที่อัปโหลด
+          echo "VERSION_CODE=$(( $(date +%s) / 60 ))" >> "$GITHUB_ENV"
+
+      - name: Build debug APK (for testing)
+        working-directory: android
+        run: gradle --no-daemon assembleDebug
+
+      - name: Build signed release (AAB + APK) for Google Play
+        working-directory: android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::notice::ข้ามการสร้างไฟล์สำหรับ Play - ยังไม่ได้ตั้ง Secrets KEYSTORE_BASE64 และ KEYSTORE_PASSWORD (ได้เฉพาะ debug APK)"
+            exit 0
+          fi
+          if [ "$SERVER_OK" != "true" ]; then
+            echo "::error::ต้องตั้ง Variable SPYFALL_SERVER_URL (https://...) ก่อน จึงจะสร้างไฟล์สำหรับ Play ได้"
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | tr -d ' \r\n' | base64 -d > upload-keystore.jks
+          gradle --no-daemon bundleRelease assembleRelease
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: spyfall-online-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Upload release files (AAB for Play Console)
+        uses: actions/upload-artifact@v4
+        with:
+          name: spyfall-online-play-release
+          path: |
+            android/app/build/outputs/bundle/release/app-release.aab
+            android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: ignore
